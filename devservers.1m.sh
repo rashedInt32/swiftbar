@@ -23,7 +23,9 @@ IGNORE=${DEVSERVERS_IGNORE:-}
 STATE=${DEVSERVERS_STATE:-$HOME/.cache/devservers/notified}
 SELF=${0:A}
 ICON=hexagon
-WARN_COLOR=#FF9F0A                     # orange row: running past the alert limit
+MEM_WARN_KB=$(( 2 * 1048576 ))         # a server at 2 GB or more shows its memory in orange
+WARN_COLOR=#FF9F0A                     # orange row: heavy memory, or running past the alert limit
+STOP_COLOR=#FF453A
 
 # Menu actions call this script back with a verb.
 case $1 in
@@ -45,6 +47,22 @@ fmt_dur() {
   else printf '%dd %dh\n' $(( s/86400 )) $(( s%86400/3600 )); fi
 }
 kind_label() { case $1 in next) echo Next.js ;; storybook) echo Storybook ;; vite) echo Vite ;; portless) echo Portless ;; *) echo $1 ;; esac; }
+# Coloured SF Symbol (white glyph on a coloured circle stays readable on the hover highlight). In menus SwiftBar draws a plain sfimage as a monochrome template and
+# ignores sfcolor; a Palette sfconfig keeps the colours. One colour per symbol layer.
+sf() {
+  local name=$1 c json=; shift
+  for c in "$@"; do json+="${json:+,}\"$c\""; done
+  echo "sfimage=$name sfconfig=$(printf '{"renderingMode":"Palette","colors":[%s]}' "$json" | base64)"
+}
+kind_icon() { # in the tool's brand colour
+  case $1 in
+    next) sf n.circle.fill '#FFFFFF' '#0A84FF' ;;
+    storybook) sf book.circle.fill '#FFFFFF' '#FF4785' ;;
+    vite) sf bolt.circle.fill '#FFFFFF' '#A855F7' ;;
+    portless) sf p.circle.fill '#FFFFFF' '#30B0C7' ;;
+    *) sf circle.hexagongrid.circle.fill '#FFFFFF' '#30D158' ;;
+  esac
+}
 fmt_mem() { local kb=$1; if (( kb >= 1048576 )); then printf '%.1f GB\n' $(( kb/1048576.0 )); else echo "$(( kb/1024 )) MB"; fi; }
 notify() { osascript -e "display notification \"$2\" with title \"$1\" sound name \"Glass\"" >/dev/null 2>&1; }
 
@@ -115,9 +133,10 @@ for pg in ${(k)g_pid}; do
   nproc=$(ps -o pid= -g $pg 2>/dev/null | wc -l | tr -d ' ')
 
   (( count++ )); (( total_kb += kb ))
-  row_color=
+  icon=$(kind_icon ${g_kind[$pg]})
+  row_color=; (( kb >= MEM_WARN_KB )) && row_color=" color=$WARN_COLOR"
   if (( limit >= 0 && secs >= limit )); then
-    (( over++ )); row_color=" color=$WARN_COLOR"
+    (( over++ )); icon=$(sf exclamationmark.circle.fill '#FFFFFF' $WARN_COLOR); row_color=" color=$WARN_COLOR"
     # Same server = same group and start time, even if its listener restarts.
     key="$pg-$started"
     live_keys+=$key
@@ -127,13 +146,13 @@ for pg in ${(k)g_pid}; do
     fi
   fi
 
-  b="$(kind_label ${g_kind[$pg]}) · $name    $(fmt_dur $secs) · $(fmt_mem $kb) |$row_color href=$url"
+  b="$(kind_label ${g_kind[$pg]}) · $name    $(fmt_dur $secs) · $(fmt_mem $kb) | $icon$row_color href=$url"
   b+=$'\n'"--${url#*://} · $(fmt_mem $kb) · up $(fmt_dur $secs) | size=12"
   b+=$'\n'"-----"
-  b+=$'\n'"--Open in browser | href=$url"
-  [[ -d $cwd ]] && b+=$'\n'"--Show in Finder | bash=/usr/bin/open param1=\"$cwd\" terminal=false"
+  b+=$'\n'"--Open in browser | $(sf arrow.up.forward.circle.fill '#FFFFFF' '#0A84FF') href=$url"
+  [[ -d $cwd ]] && b+=$'\n'"--Show in Finder | $(sf folder.circle.fill '#FFFFFF' '#5AC8FA') bash=/usr/bin/open param1=\"$cwd\" terminal=false"
   b+=$'\n'"-----"
-  b+=$'\n'"--Stop $leader | bash=$SELF param1=stop-group param2=$pg terminal=false refresh=true tooltip=\"Stops $nproc processes\""
+  b+=$'\n'"--Stop $leader | $(sf stop.circle.fill '#FFFFFF' $STOP_COLOR) color=$STOP_COLOR bash=$SELF param1=stop-group param2=$pg terminal=false refresh=true tooltip=\"Stops $nproc processes\""
   blocks[$(printf '%010d-%s' $secs $pg)]=$b
 done
 
@@ -142,7 +161,7 @@ if (( ${#live_keys} )); then print -l -- $live_keys > $STATE; else : > $STATE; f
 
 # Menu bar: icon plus count; orange once anything is past the limit.
 if (( count == 0 )); then echo " | sfimage=$ICON"
-elif (( over > 0 )); then echo "$count | sfimage=$ICON.fill color=$WARN_COLOR"
+elif (( over > 0 )); then echo "$count | $(sf $ICON.fill $WARN_COLOR) color=$WARN_COLOR"
 else echo "$count | sfimage=$ICON.fill"; fi
 echo "---"
 echo "Dev servers | size=12"
@@ -150,14 +169,16 @@ for k in ${(O)${(k)blocks}}; do print -r -- ${blocks[$k]}; done   # longest-runn
 (( count == 0 )) && echo "Nothing running"
 echo "---"
 if (( count > 0 )); then
+  # Chip colour follows total load: green under 2 GB, yellow under 4 GB, red above.
   sys_kb=$(( $(sysctl -n hw.memsize) / 1024 ))
-  echo "$(fmt_mem $total_kb) in use  ·  $(( total_kb * 100 / sys_kb ))% of $(fmt_mem $sys_kb) | bash=/usr/bin/open param1=-b param2=com.apple.ActivityMonitor terminal=false tooltip=\"Open Activity Monitor\""
+  if (( total_kb < 2097152 )); then chip=#30D158; elif (( total_kb < 4194304 )); then chip=#FFD60A; else chip=#FF453A; fi
+  echo "$(fmt_mem $total_kb) in use  ·  $(( total_kb * 100 / sys_kb ))% of $(fmt_mem $sys_kb) | $(sf memorychip.fill $chip) bash=/usr/bin/open param1=-b param2=com.apple.ActivityMonitor terminal=false tooltip=\"Open Activity Monitor\""
 fi
-if [[ $LIMIT_HOURS == off ]]; then echo "Alerts off"
-else echo "Alert after ${LIMIT_HOURS}h"; fi
+if [[ $LIMIT_HOURS == off ]]; then echo "Alerts off | $(sf bell.slash.circle.fill '#FFFFFF' '#8E8E93')"
+else echo "Alert after ${LIMIT_HOURS}h | $(sf bell.circle.fill '#FFFFFF' '#5E5CE6')"; fi
 for h in 2 3 4 5 6 8 12 off; do
   label="$h hours"; [[ $h == off ]] && { echo "-----"; label="Off"; }
   checked=false; [[ $h == $LIMIT_HOURS ]] && checked=true
   echo "--$label | bash=$SELF param1=set-limit param2=$h terminal=false refresh=true checked=$checked"
 done
-echo "Refresh | refresh=true"
+echo "Refresh | $(sf arrow.clockwise.circle.fill '#FFFFFF' '#30B0C7') refresh=true"
