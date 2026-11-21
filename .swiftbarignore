@@ -1,3 +1,4 @@
 # Not plugins: keep them out of the SwiftBar menu.
 README.md
 LICENSE
+docs/

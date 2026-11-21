@@ -2,6 +2,8 @@
 
 [SwiftBar](https://github.com/swiftbar/SwiftBar) plugins for macOS.
 
+![The Dev servers menu: four running servers with uptime and memory, total memory in use, and the alert limit](docs/devservers.png)
+
 ## Dev servers
 
 `devservers.1m.sh` puts your running dev servers in the menu bar. It refreshes every minute.
