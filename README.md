@@ -2,7 +2,7 @@
 
 [SwiftBar](https://github.com/swiftbar/SwiftBar) plugins for macOS.
 
-![The Dev servers menu: four running servers with uptime and memory, total memory in use, and the alert limit](docs/devservers.png)
+![The Dev servers menu: four running servers with uptime and memory, total memory in use, and the alert limit](.github/devservers.png)
 
 ## Dev servers
 
