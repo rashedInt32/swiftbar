@@ -1,4 +1,4 @@
-# swiftbar-plugins
+# SwiftBar plugins
 
 [SwiftBar](https://github.com/swiftbar/SwiftBar) plugins for macOS.
 
@@ -25,7 +25,7 @@
 Clone the repo and choose its folder as SwiftBar's plugin folder:
 
 ```sh
-git clone https://github.com/rashedInt32/swiftbar-plugins.git ~/swiftbar-plugins
+git clone https://github.com/rashedInt32/swiftbar.git ~/swiftbar
 ```
 
 The `.swiftbarignore` file keeps the README and LICENSE out of SwiftBar's plugin list.
@@ -33,7 +33,7 @@ The `.swiftbarignore` file keeps the README and LICENSE out of SwiftBar's plugin
 If you already have a plugin folder, link the plugin into it instead:
 
 ```sh
-ln -s ~/swiftbar-plugins/devservers.1m.sh "/path/to/your/plugin/folder/"
+ln -s ~/swiftbar/devservers.1m.sh "/path/to/your/plugin/folder/"
 ```
 
 ### Settings
