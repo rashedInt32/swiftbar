@@ -1,6 +1,6 @@
 #!/bin/zsh
 # <xbar.title>Dev servers</xbar.title>
-# <xbar.desc>Node dev servers listening on a port: uptime, RAM, stop.</xbar.desc>
+# <xbar.desc>Node dev servers listening on a port: uptime, RAM, stop. Notifies once when one runs past the limit.</xbar.desc>
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
@@ -9,18 +9,26 @@
 #
 # Settings: env vars, all optional. Set them in ~/.config/devservers/env, a zsh file this
 # script sources, or point DEVSERVERS_ENV at another file.
+#   DEVSERVERS_LIMIT_HOURS   alert past this many hours, or "off". The menu's "Alert after"
+#                            choice is saved in DEVSERVERS_CONFIG and wins over this (default 5)
 #   DEVSERVERS_IGNORE        regex on a listener's command line to skip, e.g. a package-manager proxy
+#   DEVSERVERS_STATE         file that remembers which servers were already notified
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 ENV_FILE=${DEVSERVERS_ENV:-$HOME/.config/devservers/env}
 [[ -r $ENV_FILE ]] && source $ENV_FILE
+CONFIG=${DEVSERVERS_CONFIG:-$HOME/.config/devservers/limit}
+LIMIT_HOURS=$(cat $CONFIG 2>/dev/null); LIMIT_HOURS=${LIMIT_HOURS:-${DEVSERVERS_LIMIT_HOURS:-5}}
 IGNORE=${DEVSERVERS_IGNORE:-}
+STATE=${DEVSERVERS_STATE:-$HOME/.cache/devservers/notified}
 SELF=${0:A}
 ICON=hexagon
+WARN_COLOR=#FF9F0A                     # orange row: running past the alert limit
 
 # Menu actions call this script back with a verb.
 case $1 in
   stop-group) kill -TERM -- "-$2" 2>/dev/null; exit 0 ;;
+  set-limit) [[ $2 == (off|<1-99>) ]] && { mkdir -p ${CONFIG:h}; echo $2 > $CONFIG; }; exit 0 ;;
 esac
 
 etime_secs() { # ps etime: [[dd-]hh:]mm:ss
@@ -38,6 +46,7 @@ fmt_dur() {
 }
 kind_label() { case $1 in next) echo Next.js ;; storybook) echo Storybook ;; vite) echo Vite ;; portless) echo Portless ;; *) echo $1 ;; esac; }
 fmt_mem() { local kb=$1; if (( kb >= 1048576 )); then printf '%.1f GB\n' $(( kb/1048576.0 )); else echo "$(( kb/1024 )) MB"; fi; }
+notify() { osascript -e "display notification \"$2\" with title \"$1\" sound name \"Glass\"" >/dev/null 2>&1; }
 
 # Listening TCP sockets -> ports per pid.
 typeset -A ports_by_pid
@@ -83,8 +92,12 @@ for pid in ${(k)ports_by_pid}; do
   if [[ -z ${g_pid[$pg]} || $kind == (next|storybook|vite) ]]; then g_pid[$pg]=$pid; g_kind[$pg]=$kind; fi
 done
 
+[[ $LIMIT_HOURS == <1-99> ]] || LIMIT_HOURS=off
+if [[ $LIMIT_HOURS == off ]]; then limit=-1; else limit=$(( LIMIT_HOURS * 3600 )); fi
+mkdir -p ${STATE:h}; touch $STATE
 typeset -A blocks
-total_kb=0; count=0
+typeset -a live_keys
+total_kb=0; over=0; count=0
 
 for pg in ${(k)g_pid}; do
   pid=${g_pid[$pg]}
@@ -102,8 +115,19 @@ for pg in ${(k)g_pid}; do
   nproc=$(ps -o pid= -g $pg 2>/dev/null | wc -l | tr -d ' ')
 
   (( count++ )); (( total_kb += kb ))
+  row_color=
+  if (( limit >= 0 && secs >= limit )); then
+    (( over++ )); row_color=" color=$WARN_COLOR"
+    # Same server = same group and start time, even if its listener restarts.
+    key="$pg-$started"
+    live_keys+=$key
+    if ! grep -qx -- "$key" $STATE; then
+      notify "Dev server running $(fmt_dur $secs)" "$name ${g_kind[$pg]} on :$ports[1] is using $(fmt_mem $kb)"
+      echo $key >> $STATE
+    fi
+  fi
 
-  b="$(kind_label ${g_kind[$pg]}) · $name    $(fmt_dur $secs) · $(fmt_mem $kb) | href=$url"
+  b="$(kind_label ${g_kind[$pg]}) · $name    $(fmt_dur $secs) · $(fmt_mem $kb) |$row_color href=$url"
   b+=$'\n'"--${url#*://} · $(fmt_mem $kb) · up $(fmt_dur $secs) | size=12"
   b+=$'\n'"-----"
   b+=$'\n'"--Open in browser | href=$url"
@@ -113,8 +137,12 @@ for pg in ${(k)g_pid}; do
   blocks[$(printf '%010d-%s' $secs $pg)]=$b
 done
 
-# Menu bar: icon plus count.
+# Forget servers that stopped, so a new one notifies again.
+if (( ${#live_keys} )); then print -l -- $live_keys > $STATE; else : > $STATE; fi
+
+# Menu bar: icon plus count; orange once anything is past the limit.
 if (( count == 0 )); then echo " | sfimage=$ICON"
+elif (( over > 0 )); then echo "$count | sfimage=$ICON.fill color=$WARN_COLOR"
 else echo "$count | sfimage=$ICON.fill"; fi
 echo "---"
 echo "Dev servers | size=12"
@@ -125,4 +153,11 @@ if (( count > 0 )); then
   sys_kb=$(( $(sysctl -n hw.memsize) / 1024 ))
   echo "$(fmt_mem $total_kb) in use  ·  $(( total_kb * 100 / sys_kb ))% of $(fmt_mem $sys_kb) | bash=/usr/bin/open param1=-b param2=com.apple.ActivityMonitor terminal=false tooltip=\"Open Activity Monitor\""
 fi
+if [[ $LIMIT_HOURS == off ]]; then echo "Alerts off"
+else echo "Alert after ${LIMIT_HOURS}h"; fi
+for h in 2 3 4 5 6 8 12 off; do
+  label="$h hours"; [[ $h == off ]] && { echo "-----"; label="Off"; }
+  checked=false; [[ $h == $LIMIT_HOURS ]] && checked=true
+  echo "--$label | bash=$SELF param1=set-limit param2=$h terminal=false refresh=true checked=$checked"
+done
 echo "Refresh | refresh=true"
