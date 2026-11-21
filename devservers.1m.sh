@@ -13,6 +13,8 @@
 #                            choice is saved in DEVSERVERS_CONFIG and wins over this (default 5)
 #   DEVSERVERS_IGNORE        regex on a listener's command line to skip, e.g. a package-manager proxy
 #   DEVSERVERS_STATE         file that remembers which servers were already notified
+#   DEVSERVERS_TENANTS_ROOT  folder of worktrees started by a `tenants` tool (see README)
+#   DEVSERVERS_TENANTS_BIN   that tool; `$DEVSERVERS_TENANTS_BIN down <name>` stops one
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 ENV_FILE=${DEVSERVERS_ENV:-$HOME/.config/devservers/env}
@@ -21,6 +23,14 @@ CONFIG=${DEVSERVERS_CONFIG:-$HOME/.config/devservers/limit}
 LIMIT_HOURS=$(cat $CONFIG 2>/dev/null); LIMIT_HOURS=${LIMIT_HOURS:-${DEVSERVERS_LIMIT_HOURS:-5}}
 IGNORE=${DEVSERVERS_IGNORE:-}
 STATE=${DEVSERVERS_STATE:-$HOME/.cache/devservers/notified}
+# Tenant support is on only when the root is set and the tool is executable.
+TENANTS_BIN=${DEVSERVERS_TENANTS_BIN:-}
+TENANTS_ROOT=${DEVSERVERS_TENANTS_ROOT:-}
+if [[ -n $TENANTS_ROOT && -x $TENANTS_BIN ]]; then
+  TENANTS_ROOT=${TENANTS_ROOT:A}   # lsof reports resolved paths, so compare against the resolved root
+else
+  TENANTS_ROOT=
+fi
 SELF=${0:A}
 ICON=hexagon
 MEM_WARN_KB=$(( 2 * 1048576 ))         # a server at 2 GB or more shows its memory in orange
@@ -30,6 +40,7 @@ STOP_COLOR=#FF453A
 # Menu actions call this script back with a verb.
 case $1 in
   stop-group) kill -TERM -- "-$2" 2>/dev/null; exit 0 ;;
+  stop-tenant) [[ -n $TENANTS_ROOT ]] && "$TENANTS_BIN" down "$2" >/dev/null 2>&1; exit 0 ;;
   set-limit) [[ $2 == (off|<1-99>) ]] && { mkdir -p ${CONFIG:h}; echo $2 > $CONFIG; }; exit 0 ;;
 esac
 
@@ -125,9 +136,22 @@ for pg in ${(k)g_pid}; do
   started=$(ps -o lstart= -p $lp | tr -s ' ' '_')
   kb=0; for r in ${(f)"$(ps -o rss= -g $pg 2>/dev/null)"}; do (( kb += r )); done
   cwd=$(lsof -a -p $pid -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
-  top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); name=${${top:-$cwd}:t}
+  tenant=
+  if [[ -n $TENANTS_ROOT && $cwd == $TENANTS_ROOT/* ]]; then
+    name=${${cwd#$TENANTS_ROOT/}%%/*}
+    # A tenant server only if `tenants` started it: its pid file names an ancestor of the listener.
+    # A server started by hand in a worktree is stopped and opened like any other.
+    tpid=$(cat $TENANTS_ROOT/.run/$name.pid 2>/dev/null)
+    if [[ -n $tpid ]]; then
+      p=$pid
+      for i in {1..15}; do
+        [[ $p == $tpid ]] && { tenant=$name; break; }
+        p=$(ps -o ppid= -p $p 2>/dev/null | tr -d ' '); [[ -z $p || $p -le 1 ]] && break
+      done
+    fi
+  else top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); name=${${top:-$cwd}:t}; fi
   ports=(${(n)${(s: :)g_ports[$pg]}})
-  url="http://localhost:$ports[1]"
+  url="http://localhost:$ports[1]"; [[ -n $tenant ]] && url="https://$tenant.localhost"
   leader=$(ps -o args= -p $pg 2>/dev/null); [[ -z $leader ]] && leader=$(ps -o args= -p $pid)
   leader=$(print -r -- $leader | sed 's|^[^ ]*/||' | cut -c1-40)
   nproc=$(ps -o pid= -g $pg 2>/dev/null | wc -l | tr -d ' ')
@@ -152,7 +176,11 @@ for pg in ${(k)g_pid}; do
   b+=$'\n'"--Open in browser | $(sf arrow.up.forward.circle.fill '#FFFFFF' '#0A84FF') href=$url"
   [[ -d $cwd ]] && b+=$'\n'"--Show in Finder | $(sf folder.circle.fill '#FFFFFF' '#5AC8FA') bash=/usr/bin/open param1=\"$cwd\" terminal=false"
   b+=$'\n'"-----"
-  b+=$'\n'"--Stop $leader | $(sf stop.circle.fill '#FFFFFF' $STOP_COLOR) color=$STOP_COLOR bash=$SELF param1=stop-group param2=$pg terminal=false refresh=true tooltip=\"Stops $nproc processes\""
+  if [[ -n $tenant ]]; then
+    b+=$'\n'"--Stop $tenant | $(sf stop.circle.fill '#FFFFFF' $STOP_COLOR) color=$STOP_COLOR bash=$SELF param1=stop-tenant param2=$tenant terminal=false refresh=true"
+  else
+    b+=$'\n'"--Stop $leader | $(sf stop.circle.fill '#FFFFFF' $STOP_COLOR) color=$STOP_COLOR bash=$SELF param1=stop-group param2=$pg terminal=false refresh=true tooltip=\"Stops $nproc processes\""
+  fi
   blocks[$(printf '%010d-%s' $secs $pg)]=$b
 done
 
